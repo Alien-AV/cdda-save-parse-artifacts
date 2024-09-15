@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Relic Parser</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f9f9f9;
+        }
+        h1 {
+            color: #333;
+        }
+        #fileInput {
+            margin-bottom: 10px;
+        }
+        #parseButton, #downloadButton {
+            padding: 8px 16px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        #parseButton:disabled, #downloadButton:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        #results {
+            margin-top: 20px;
+            border-collapse: collapse;
+            width: 100%;
+            background-color: #fff;
+        }
+        #results th, #results td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+        #results th {
+            background-color: #f2f2f2;
+            text-align: left;
+        }
+        .modifier-add {
+            color: green;
+            font-weight: bold;
+        }
+        .modifier-mult {
+            color: blue;
+            font-weight: bold;
+        }
+        .error {
+            color: red;
+            margin-top: 10px;
+        }
+        /* Responsive Design */
+        @media (max-width: 600px) {
+            #results th, #results td {
+                padding: 4px;
+                font-size: 12px;
+            }
+            #parseButton, #downloadButton {
+                font-size: 14px;
+                padding: 6px 12px;
+            }
+        }
+        /* Processing Text */
+        #processingMessage {
+            display: none;
+            margin-top: 10px;
+            font-style: italic;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Relic Parser</h1>
+<input type="file" id="fileInput" accept=".sav">
+<button id="parseButton">Parse .sav File</button>
+<button id="downloadButton" disabled>Download CSV</button>
+<div id="errorMessage" class="error"></div>
+<div id="processingMessage">Processing...</div>
+
+<table id="results">
+    <thead>
+        <tr>
+            <th>TypeID (Charges/Max Charges)</th>
+            <th>Effects</th>
+        </tr>
+    </thead>
+    <tbody>
+        <!-- Results will be inserted here -->
+    </tbody>
+</table>
+
+<script>
+    document.getElementById('parseButton').addEventListener('click', () => {
+        const fileInput = document.getElementById('fileInput');
+        const errorMessage = document.getElementById('errorMessage');
+        const processingMessage = document.getElementById('processingMessage');
+        errorMessage.textContent = ''; // Clear previous errors
+        processingMessage.style.display = 'none'; // Hide processing message
+
+        if (fileInput.files.length === 0) {
+            alert('Please select a .sav file.');
+            return;
+        }
+
+        const file = fileInput.files[0];
+        const reader = new FileReader();
+
+        reader.onload = function(event) {
+            try {
+                processingMessage.style.display = 'block'; // Show processing message
+
+                // Split the file content into lines
+                const lines = event.target.result.split('\n');
+                // Remove lines starting with '#'
+                const jsonLines = lines.filter(line => !line.trim().startsWith('#'));
+                // Join the remaining lines back into a single string
+                const jsonString = jsonLines.join('\n');
+                // Parse the JSON content
+                const data = JSON.parse(jsonString);
+                const relics = findRelics(data);
+                if (relics.length === 0) {
+                    errorMessage.textContent = 'No relics found in the provided file.';
+                }
+                processRelics(relics);
+            } catch (e) {
+                errorMessage.textContent = 'Invalid .sav file or JSON structure.';
+                console.error(e);
+            } finally {
+                processingMessage.style.display = 'none'; // Hide processing message
+            }
+        };
+
+        reader.readAsText(file);
+    });
+
+    /**
+     * Recursively search the JSON object for all objects containing 'relic_data'
+     * @param {Object|Array} obj - The JSON object or array to search
+     * @returns {Array} - An array of objects that contain 'relic_data'
+     */
+    function findRelics(obj) {
+        let relics = [];
+
+        if (Array.isArray(obj)) {
+            obj.forEach(item => {
+                relics = relics.concat(findRelics(item));
+            });
+        } else if (typeof obj === 'object' && obj !== null) {
+            if (obj.hasOwnProperty('relic_data')) {
+                relics.push(obj);
+            }
+            Object.values(obj).forEach(value => {
+                relics = relics.concat(findRelics(value));
+            });
+        }
+
+        return relics;
+    }
+
+    /**
+     * Processes the array of relic objects to extract required information
+     * @param {Array} relics - Array of relic objects
+     */
+    function processRelics(relics) {
+        const processedRelics = relics.map(relic => {
+            let typeid = relic.typeid || 'unknown';
+            const chargeInfo = relic.relic_data.charge_info || {};
+            const charges = chargeInfo.charges || 0;
+            const maxCharges = chargeInfo.max_charges || 0;
+
+            // Handle 'is_favorite' and 'item_vars.item_note'
+            const isFavorite = relic.is_favorite || false;
+            const itemVars = relic.item_vars || {};
+            const itemNote = itemVars.item_note || '';
+
+            // Prefix with '*' if is_favorite
+            if (isFavorite) {
+                typeid = `* ${typeid}`;
+            }
+
+            // Suffix with [note] if item_note is present
+            if (itemNote) {
+                typeid = `${typeid} [${itemNote}]`;
+            }
+
+            // Process Active Effects
+            let activeEffects = (relic.relic_data.active_effects || []).map(effect => {
+                // Remove prefixes and lowercase
+                let id = effect.id.replace(/^(AEA_|AO_)/, '').toLowerCase();
+                // Replace underscores with spaces
+                id = id.replace(/_/g, ' ');
+                return id;
+            });
+
+            // Process Passive Effects
+            const passivesByCondition = {};
+
+            (relic.relic_data.passive_effects || []).forEach(effect => {
+                const condition = effect.condition || 'UNKNOWN';
+                if (!passivesByCondition[condition]) {
+                    passivesByCondition[condition] = [];
+                }
+                (effect.values || []).forEach(val => {
+                    let valueName = val.value ? val.value.toLowerCase().replace(/_/g, ' ') : '';
+                    // Shorten 'artifact resonance' to 'AR'
+                    if (valueName === 'artifact resonance') {
+                        valueName = 'AR';
+                    }
+                    let modifier = '';
+                    if ('add' in val) {
+                        const add = parseFloat(val.add);
+                        if (add < 0) {
+                            modifier = `${add} ${valueName}`;
+                        } else {
+                            modifier = `+${add} ${valueName}`;
+                        }
+                        passivesByCondition[condition].push(modifier);
+                    }
+                    if ('mult' in val) {
+                        const mult = parseFloat(val.mult);
+                        modifier = `*${mult} ${valueName}`;
+                        passivesByCondition[condition].push(modifier);
+                    }
+                });
+            });
+
+            // Extract AR if present in passives
+            let arEffect = '';
+            if (passivesByCondition['ALWAYS']) {
+                const alwaysPassives = passivesByCondition['ALWAYS'];
+                const arIndex = alwaysPassives.findIndex(effect => effect.toLowerCase().includes('ar'));
+                if (arIndex !== -1) {
+                    arEffect = alwaysPassives.splice(arIndex, 1)[0];
+                }
+            }
+            if (passivesByCondition['HELD']) {
+                const heldPassives = passivesByCondition['HELD'];
+                const arIndex = heldPassives.findIndex(effect => effect.toLowerCase().includes('ar'));
+                if (arIndex !== -1 && !arEffect) {
+                    arEffect = heldPassives.splice(arIndex, 1)[0];
+                }
+            }
+
+            // Compile other passives
+            let otherPassives = [];
+            Object.keys(passivesByCondition).forEach(condition => {
+                if (condition === 'ALWAYS' || condition === 'HELD') {
+                    otherPassives = otherPassives.concat(passivesByCondition[condition]);
+                } else if (condition === 'WORN') {
+                    const wornPassives = passivesByCondition[condition].map(p => p);
+                    if (wornPassives.length > 0) {
+                        otherPassives.push(`worn: ${wornPassives.join(', ')}`);
+                    }
+                }
+            });
+
+            // Sort AR first
+            let effectsList = [];
+            if (arEffect) {
+                effectsList.push(arEffect);
+            }
+
+            // Add Active Effects
+            effectsList = effectsList.concat(activeEffects);
+
+            // Add other Passives
+            effectsList = effectsList.concat(otherPassives);
+
+            // Combine Effects
+            const effectsString = effectsList.join(', ');
+
+            return {
+                identifier: `${typeid} (${charges}/${maxCharges})`,
+                effects: effectsString
+            };
+        });
+
+        displayResults(processedRelics);
+        enableDownload(processedRelics);
+    }
+
+    /**
+     * Displays the processed relics in the results table
+     * @param {Array} relics - Array of processed relic objects
+     */
+    function displayResults(relics) {
+        const tbody = document.querySelector('#results tbody');
+        tbody.innerHTML = ''; // Clear previous results
+
+        relics.forEach(relic => {
+            const row = document.createElement('tr');
+
+            const typeidCell = document.createElement('td');
+            typeidCell.textContent = relic.identifier;
+            row.appendChild(typeidCell);
+
+            const effectsCell = document.createElement('td');
+            // Highlight modifiers and replace underscores with spaces
+            effectsCell.innerHTML = formatEffects(relic.effects);
+            row.appendChild(effectsCell);
+
+            tbody.appendChild(row);
+        });
+    }
+
+    /**
+     * Formats the effects string to highlight modifiers and handle specific formatting rules
+     * @param {string} effects - The combined effects string
+     * @returns {string} - HTML formatted string with highlighted modifiers
+     */
+    function formatEffects(effects) {
+        return effects.split(', ').map(effect => {
+            // Handle 'worn:' prefix separately
+            if (effect.startsWith('worn:')) {
+                const wornEffects = effect.slice(5).trim().split(', ').map(wEffect => {
+                    return formatSingleEffect(wEffect);
+                }).join(', ');
+                return `worn: ${wornEffects}`;
+            } else {
+                return formatSingleEffect(effect);
+            }
+        }).join(', ');
+    }
+
+    /**
+     * Formats a single effect based on its modifier
+     * @param {string} effect - A single effect string
+     * @returns {string} - HTML formatted effect
+     */
+    function formatSingleEffect(effect) {
+        if (effect.startsWith('+') && !effect.startsWith('++')) {
+            return `<span class="modifier-add">${effect}</span>`;
+        } else if (effect.startsWith('*')) {
+            return `<span class="modifier-mult">${effect}</span>`;
+        } else if (effect.startsWith('-')) {
+            // Negative add modifier
+            return `<span class="modifier-add">${effect}</span>`;
+        } else {
+            return effect;
+        }
+    }
+
+    /**
+     * Enables the download button with the CSV data
+     * @param {Array} relics - Array of processed relic objects
+     */
+    function enableDownload(relics) {
+        const downloadButton = document.getElementById('downloadButton');
+        downloadButton.disabled = false;
+
+        const csvContent = generateCSV(relics);
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+
+        downloadButton.onclick = function() {
+            const link = document.createElement('a');
+            link.setAttribute('href', url);
+            link.setAttribute('download', 'relics.csv');
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+    }
+
+    /**
+     * Generates CSV content from the relics array
+     * @param {Array} relics - Array of processed relic objects
+     * @returns {string} - CSV formatted string
+     */
+    function generateCSV(relics) {
+        const headers = ['TypeID (Charges/Max Charges)', 'Effects'];
+        const rows = relics.map(relic => `"${relic.identifier}","${relic.effects.replace(/"/g, '""')}"`);
+        return [headers.join(','), ...rows].join('\n');
+    }
+</script>
+
+</body>
+</html>
